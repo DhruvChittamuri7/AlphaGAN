@@ -5,7 +5,7 @@ import torchvision
 
 
 class ASPP(nn.Module):
-    def __init__(self, in_channels, out_channels=256):
+    def __init__(self, in_channels, out_channels):
         super(ASPP, self).__init__()
         self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=1)
         self.conv2 = nn.Conv2d(in_channels, out_channels, kernel_size=3, dilation=6, padding=6)
@@ -29,38 +29,64 @@ class Encoder(nn.Module):
     def __init__(self):
         super(Encoder, self).__init__()
         resnet50 = torchvision.models.resnet50(pretrained=True)
+        pretrained_dict = resnet50.state_dict()
+
         self.conv1 = resnet50.conv1
         self.bn1 = resnet50.bn1
         self.relu = resnet50.relu
         self.maxpool = resnet50.maxpool
-        self.conv2_x = resnet50.layer1
-        self.conv3_x = resnet50.layer2
-        self.conv4_x = resnet50.layer3
+        self.layer1 = resnet50.layer1  # conv2_x
+        self.layer2 = resnet50.layer2  # conv3_x
+
+        self.layer3 = resnet50.layer3  # conv4_x
         for i in range(6):
-            self.conv4_x[i].conv1 = nn.Conv2d(512 if i == 0 else 1024, 256, kernel_size=1, stride=1,
+            self.layer3[i].conv1 = nn.Conv2d(512 if i == 0 else 1024, 256, kernel_size=1, stride=1,
                                               dilation=2, padding=2, bias=False)
-            self.conv4_x[i].conv2 = nn.Conv2d(256, 256, kernel_size=1, stride=1,
+            self.layer3[i].conv2 = nn.Conv2d(256, 256, kernel_size=3, stride=1,
                                               dilation=2, padding=2, bias=False)
-            self.conv4_x[i].conv3 = nn.Conv2d(256, 1024, kernel_size=1, stride=1,
+            self.layer3[i].conv3 = nn.Conv2d(256, 1024, kernel_size=1, stride=1,
                                               dilation=2, padding=2, bias=False)
-        self.conv5_x = resnet50.layer4
+
+        self.layer4 = resnet50.layer4  # conv5_x
         for i in range(3):
-            self.conv5_x[i].conv1 = nn.Conv2d(1024 if i == 0 else 2048, 512, kernel_size=1, stride=1,
+            self.layer4[i].conv1 = nn.Conv2d(1024 if i == 0 else 2048, 512, kernel_size=1, stride=1,
                                               dilation=4, padding=4, bias=False)
-            self.conv5_x[i].conv2 = nn.Conv2d(512, 512, kernel_size=1, stride=1,
+            self.layer4[i].conv2 = nn.Conv2d(512, 512, kernel_size=3, stride=1,
                                               dilation=4, padding=4, bias=False)
-            self.conv5_x[i].conv3 = nn.Conv2d(512, 2048, kernel_size=1, stride=1,
+            self.layer4[i].conv3 = nn.Conv2d(512, 2048, kernel_size=1, stride=1,
                                               dilation=4, padding=4, bias=False)
-        self.aspp = ASPP(in_channels=2048, out_channels=256)
+
+        self.aspp = ASPP(2048, 256)
+
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                m.weight.data.fill_(1)
+                m.bias.data.zero_()
+
+        state_dict = self.state_dict()
+        pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in state_dict}
+        state_dict.update(pretrained_dict)
+        self.load_state_dict(state_dict)
 
     def forward(self, x):
+        skip_rgb = x
+
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
-        x = self.maxpool(x)
-        x = self.conv2_x(x)
-        x = self.conv3_x(x)
-        x = self.conv4_x(x)
-        x = self.conv5_x(x)
+        skip_conv1_x = x
+
+        x, max_index = self.maxpool(x, return_indices=True)
+
+        x = self.layer1(x)  # conv2_x
+        skip_conv2_x = x
+
+        x = self.layer2(x)  # conv3_x
+        x = self.layer3(x)  # conv4_x
+        x = self.layer4(x)  # conv5_x
         x = self.aspp(x)
-        return x
+        return x, skip_rgb, skip_conv1_x, skip_conv2_x, max_index
