@@ -18,7 +18,7 @@ class AlphaMattingDataset(Dataset):
 
     def __getitem__(self, idx):
         img_name = os.path.join(self.input_dir, "GT" + self.images[idx] + ".png")
-        gt_name = os.path.join(self.gt_dir, "GT" + self.images[idx] + ".png")  
+        gt_name = os.path.join(self.gt_dir, "GT" + self.images[idx] + ".png") 
         
         image = Image.open(img_name).convert("RGB")
         gt_image = Image.open(gt_name).convert("L") 
@@ -26,7 +26,7 @@ class AlphaMattingDataset(Dataset):
         return image, gt_image
 
 
-train_dataset = AlphaMattingDataset(input_dir='Data/Train/InputImages', gt_dir='Data/Train/GroundTruthAlphas')
+train_dataset = AlphaMattingDataset(input_dir='Data/Train/InputImages', gt_dir='Data/Train/GroundTruthAlphas', trimaps = 'Data/Train/Trimaps')
 train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, num_workers=2)
 
 encoder = Encoder.Encoder()

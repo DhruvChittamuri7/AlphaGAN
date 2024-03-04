@@ -28,7 +28,7 @@ class ASPP(nn.Module):
 class Encoder(nn.Module):
     def __init__(self):
         super(Encoder, self).__init__()
-        resnet50 = torchvision.models.resnet50(pretrained=True)
+        resnet50 = torchvision.models.resnet50(weights=torchvision.models.ResNet50_Weights.DEFAULT)
         pretrained_dict = resnet50.state_dict()
 
         self.conv1 = resnet50.conv1
