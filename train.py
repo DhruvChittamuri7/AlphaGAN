@@ -7,17 +7,18 @@ import Decoder
 import Discriminator
 
 class AlphaMattingDataset(Dataset):
-    def __init__(self, input_dir, gt_dir):
+    def __init__(self, input_dir, gt_dir, trimaps):
         self.input_dir = input_dir
         self.gt_dir = gt_dir
+        self.trimaps = trimaps
         self.images = os.listdir(self.input_dir)
 
     def __len__(self):
         return len(self.images)
 
     def __getitem__(self, idx):
-        img_name = os.path.join(self.input_dir, self.images[idx])
-        gt_name = os.path.join(self.gt_dir, self.images[idx].replace('input', 'gt'))  
+        img_name = os.path.join(self.input_dir, "GT" + self.images[idx] + ".png")
+        gt_name = os.path.join(self.gt_dir, "GT" + self.images[idx] + ".png")  
         
         image = Image.open(img_name).convert("RGB")
         gt_image = Image.open(gt_name).convert("L") 
