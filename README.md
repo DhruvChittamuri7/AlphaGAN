@@ -26,5 +26,16 @@ curl -o Trimaps.zip http://alphamatting.com/datasets/zip/trimap_training_lowres.
 curl -o GroundTruthAlphas.zip http://alphamatting.com/datasets/zip/gt_training_lowres.zip ; unzip GroundTruthAlphas.zip -d ./Data/Train/GroundTruthAlphas
 # Test Data
 curl -o TestInputImages.zip http://alphamatting.com/datasets/zip/input_lowres.zip ; unzip TestInputImages.zip -d ./Data/Test/InputImages
-curl -o TestTrimaps.zip http://alphamatting.com/datasets/zip/trimap_lowres.zip ; unzip TestTrimaps.zip ./Data/Test/Trimaps
+curl -o TestTrimaps.zip http://alphamatting.com/datasets/zip/trimap_lowres.zip ; unzip TestTrimaps.zip -d ./Data/Test/Trimaps
+```
+
+
+# Create Virtual Environment
+
+```
+# Create virtual env
+python3.11 -m venv venv
+source venv/bin/activate
+# Download the requirements for project
+pip -r requirements.txt
 ```
