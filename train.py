@@ -1,5 +1,4 @@
 import os
-import numpy as np
 from PIL import Image
 import torch as t
 from torchvision import transforms
@@ -34,17 +33,60 @@ class AlphaMattingDataset(Dataset):
         return image, tri_image, gt_image
 
 
-transformer = transforms.Compose([transforms.ToTensor()])
+transformer = transforms.Compose([transforms.ToTensor(), transforms.CenterCrop(320)])
 
 train_dataset = AlphaMattingDataset(input_dir='Data/Train/InputImages', gt_dir='Data/Train/GroundTruthAlphas',
                                     trimaps='Data/Train/Trimaps')
-train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, num_workers=2)
-
-generator = Generator.Generator()
-discriminator = Discriminator.PatchGANDiscriminator(input_channels=3)
+# train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, num_workers=2)
+train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
 
 device = t.device("cuda" if t.cuda.is_available() else "cpu")
 
-for image, tri_image, gt_image in train_dataset:
-    input_img = t.tensor(np.concatenate((image.numpy(), tri_image.numpy()), axis=0)).to(device)
-    gt_img = gt_image.to(device)
+epochs = 1
+lr_g = 0.001
+lr_d = 0.001
+
+generator = Generator.Generator().to(device)
+discriminator = Discriminator.PatchGANDiscriminator(patch_size=4).to(device)
+
+optim_g = t.optim.Adam(generator.parameters(), lr=lr_g)
+optim_d = t.optim.Adam(discriminator.parameters(), lr=lr_d)
+
+l1_loss = t.nn.SmoothL1Loss().to(device)
+mse_loss = t.nn.MSELoss().to(device)
+
+for epoch in range(epochs):
+    for image, tri_image, gt_image in train_loader:
+        image = image.to(device)
+        tri_image = tri_image.to(device)
+        gt_image = gt_image.to(device)
+        input_img = t.cat((image, tri_image), dim=1).to(device)
+
+        # Train discriminator
+        optim_d.zero_grad()
+
+        real_alpha_pred = discriminator(t.cat((image, gt_image), dim=1))
+        d_real_loss = mse_loss(real_alpha_pred, t.ones_like(real_alpha_pred))
+
+        fake_alpha = generator(input_img)
+        fake_alpha_pred = discriminator(t.cat((image, fake_alpha.detach()), dim=1))
+        d_fake_loss = mse_loss(fake_alpha_pred, t.zeros_like(fake_alpha_pred))
+
+        d_loss = d_real_loss + d_fake_loss
+        d_loss.backward()
+        optim_d.step()
+
+        # Train generator
+        optim_g.zero_grad()
+
+        fake_alpha = generator(input_img)
+        g_l1_loss = l1_loss(fake_alpha, gt_image)
+
+        fake_alpha_pred = discriminator(t.cat((image, fake_alpha), dim=1))
+        g_gan_loss = mse_loss(fake_alpha_pred, t.ones_like(fake_alpha_pred))
+
+        g_loss = g_l1_loss + g_gan_loss
+        g_loss.backward()
+        optim_g.step()
+
+    print(f"Epoch {epoch + 1}")
