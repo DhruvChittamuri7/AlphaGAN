@@ -1,5 +1,5 @@
-import torch
-import torch.nn as nn
+import torch as t
+from torch import nn
 import torch.nn.functional as F
 import torchvision
 
@@ -21,43 +21,60 @@ class ASPP(nn.Module):
         x3 = F.relu(self.bn(self.conv3(x)))
         x4 = F.relu(self.bn(self.conv4(x)))
         x5 = F.relu(self.bn(self.conv5(F.avg_pool2d(x, kernel_size=3, stride=1, padding=1))))
-        x = self.conv6(torch.cat((x1, x2, x3, x4, x5), dim=1))
+        x = self.conv6(t.cat((x1, x2, x3, x4, x5), dim=1))
         return x
 
 
-class Encoder(nn.Module):
-    def __init__(self):
-        super(Encoder, self).__init__()
-        resnet50 = torchvision.models.resnet50(weights=torchvision.models.ResNet50_Weights.DEFAULT)
-        pretrained_dict = resnet50.state_dict()
+class Bottleneck(nn.Module):
+    expansion = 4
 
-        self.conv1 = resnet50.conv1
-        self.bn1 = resnet50.bn1
-        self.relu = resnet50.relu
-        self.maxpool = resnet50.maxpool
-        self.layer1 = resnet50.layer1  # conv2_x
-        self.layer2 = resnet50.layer2  # conv3_x
+    def __init__(self, inplanes, planes, stride=1, dilation=1, downsample=None):
+        super(Bottleneck, self).__init__()
+        self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(planes)
+        if dilation != 1:
+            self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1,
+                                   padding=dilation, dilation=dilation, bias=False)
+        else:
+            self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride,
+                                   padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(planes)
+        self.conv3 = nn.Conv2d(planes, planes * 4, kernel_size=1, bias=False)
+        self.bn3 = nn.BatchNorm2d(planes * 4)
+        self.relu = nn.ReLU()
+        self.downsample = downsample
+        self.stride = stride
 
-        self.layer3 = resnet50.layer3  # conv4_x
-        for i in range(6):
-            self.layer3[i].conv1 = nn.Conv2d(512 if i == 0 else 1024, 256, kernel_size=1, stride=1,
-                                             dilation=2, padding=2, bias=False)
-            self.layer3[i].conv2 = nn.Conv2d(256, 256, kernel_size=3, stride=1,
-                                             dilation=2, padding=2, bias=False)
-            self.layer3[i].conv3 = nn.Conv2d(256, 1024, kernel_size=1, stride=1,
-                                             dilation=2, padding=2, bias=False)
+    def forward(self, x):
+        residual = x
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out = self.relu(out)
+        out = self.conv3(out)
+        out = self.bn3(out)
+        if self.downsample is not None:
+            residual = self.downsample(x)
+        out += residual
+        out = self.relu(out)
+        return out
 
-        self.layer4 = resnet50.layer4  # conv5_x
-        for i in range(3):
-            self.layer4[i].conv1 = nn.Conv2d(1024 if i == 0 else 2048, 512, kernel_size=1, stride=1,
-                                             dilation=4, padding=4, bias=False)
-            self.layer4[i].conv2 = nn.Conv2d(512, 512, kernel_size=3, stride=1,
-                                             dilation=4, padding=4, bias=False)
-            self.layer4[i].conv3 = nn.Conv2d(512, 2048, kernel_size=1, stride=1,
-                                             dilation=4, padding=4, bias=False)
 
-        self.aspp = ASPP(2048, 256)
-
+class ResNet(nn.Module):
+    def __init__(self, block, layers):
+        self.inplanes = 64
+        super(ResNet, self).__init__()
+        self.conv_1 = nn.Conv2d(4, 64, kernel_size=7, stride=2, padding=3,
+                                bias=False)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.relu = nn.ReLU()
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1, return_indices=True)
+        self.layer1 = self._make_layer(block, 64, layers[0])
+        self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
+        self.layer3 = self._make_layer(block, 256, layers[2], stride=2, dilation=2)
+        self.layer4 = self._make_layer(block, 512, layers[3], stride=2, dilation=2)
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight)
@@ -67,27 +84,61 @@ class Encoder(nn.Module):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
 
-        state_dict = self.state_dict()
-        pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in state_dict}
-        state_dict.update(pretrained_dict)
-        self.load_state_dict(state_dict)
+    def _make_layer(self, block, planes, blocks, stride=1, dilation=1):
+        downsample = None
+        downsample_stride = stride if dilation == 1 else 1
+        if stride != 1 or self.inplanes != planes * block.expansion:
+            downsample = nn.Sequential(
+                nn.Conv2d(self.inplanes, planes * block.expansion,
+                          kernel_size=1, stride=downsample_stride, bias=False),
+                nn.BatchNorm2d(planes * block.expansion),
+            )
+        layers = []
+        layers.append(block(self.inplanes, planes, stride, dilation, downsample))
+        self.inplanes = planes * block.expansion
+        for i in range(1, blocks):
+            layers.append(block(self.inplanes, planes))
+        return nn.Sequential(*layers)
 
     def forward(self, x):
         skip_rgb = x
-
-        x = self.conv1(x)
+        x = self.conv_1(x)
         x = self.bn1(x)
         x = self.relu(x)
         skip_conv1_x = x
-
-        x, max_index = self.maxpool(x, return_indices=True)
-
-        x = self.layer1(x)  # conv2_x
+        x, max_index = self.maxpool(x)
+        x = self.layer1(x)
         skip_conv2_x = x
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+        return x, skip_rgb, skip_conv1_x, skip_conv2_x, max_index
 
-        x = self.layer2(x)  # conv3_x
-        x = self.layer3(x)  # conv4_x
-        x = self.layer4(x)  # conv5_x
+
+class Encoder(nn.Module):
+    def __init__(self):
+        super(Encoder, self).__init__()
+        self.resnet50 = ResNet(Bottleneck, [3, 4, 6, 3])
+        self.aspp = ASPP(in_channels=2048, out_channels=256)
+
+        pretrained_resnet50 = torchvision.models.resnet50(weights=torchvision.models.ResNet50_Weights.DEFAULT)
+        pretrained_dict = pretrained_resnet50.state_dict()
+        atrous_resnet_dict = self.resnet50.state_dict()
+        pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in atrous_resnet_dict}
+        atrous_resnet_dict.update(pretrained_dict)
+        self.resnet50.load_state_dict(atrous_resnet_dict)
+
+        for m in self.aspp.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+
+    def forward(self, x):
+        x, skip_rgb, skip_conv1_x, skip_conv2_x, max_index = self.resnet50(x)
         x = self.aspp(x)
         return x, skip_rgb, skip_conv1_x, skip_conv2_x, max_index
 
@@ -95,61 +146,58 @@ class Encoder(nn.Module):
 class Decoder(nn.Module):
     def __init__(self):
         super(Decoder, self).__init__()
+        self.bilinear = nn.Sequential(
+            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True),
+            nn.LeakyReLU(0.2),
+            nn.BatchNorm2d(256)
+        )
 
-        self.skip_1 = nn.Sequential(
-            nn.Conv2d(256, 64, kernel_size=1, bias=False),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True)
+        self.skip_2 = nn.Sequential(
+            nn.Conv2d(in_channels=256, out_channels=48, kernel_size=1),
+            nn.BatchNorm2d(48),
+            nn.LeakyReLU(0.2)
+
         )
 
         self.deconv1_x = nn.Sequential(
-            nn.Conv2d(256 + 64, 256, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(256, 128, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(128, 64, kernel_size=3, padding=1, bias=False),
+            nn.ConvTranspose2d(in_channels=256 + 48, out_channels=256, kernel_size=3, padding=1),
+            nn.ConvTranspose2d(in_channels=256, out_channels=128, kernel_size=3, padding=1),
+            nn.ConvTranspose2d(in_channels=128, out_channels=64, kernel_size=3, padding=1),
             nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True)
+            nn.LeakyReLU(0.2)
         )
 
         self.unpooling = nn.MaxUnpool2d(kernel_size=2, stride=2)
 
-        self.skip_2 = nn.Sequential(
-            nn.Conv2d(64, 32, kernel_size=1, bias=False),
+        self.skip_1 = nn.Sequential(
+            nn.Conv2d(in_channels=64, out_channels=32, kernel_size=1),
             nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True)
+            nn.LeakyReLU(0.2)
         )
 
         self.deconv2_x = nn.Sequential(
-            nn.Conv2d(64 + 32, 64, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(64, 64, kernel_size=3, stride=2, padding=1, output_padding=1, bias=False),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 32, kernel_size=3, padding=1, bias=False),
+            nn.ConvTranspose2d(in_channels=64 + 32, out_channels=64, kernel_size=3, stride=2, padding=1,
+                               output_padding=1),
+            nn.ConvTranspose2d(in_channels=64, out_channels=64, kernel_size=3, padding=1),
+            nn.ConvTranspose2d(in_channels=64, out_channels=32, kernel_size=3, padding=1),
             nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True)
+            nn.LeakyReLU(0.2)
         )
 
         self.deconv3_x = nn.Sequential(
-            nn.Conv2d(32 + 3, 32, kernel_size=3, padding=1, bias=False),
+            nn.ConvTranspose2d(in_channels=32 + 4, out_channels=32, kernel_size=3, padding=1),
+            nn.ConvTranspose2d(in_channels=32, out_channels=32, kernel_size=3, padding=1),
             nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(32, 32, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True)
+            nn.LeakyReLU(0.2)
         )
 
         self.deconv4_x = nn.Sequential(
-            nn.Conv2d(32, 1, kernel_size=3, padding=1, bias=False),
+            nn.ConvTranspose2d(in_channels=32, out_channels=1, kernel_size=3, padding=1),
             nn.Sigmoid()
         )
 
         for m in self.modules():
-            if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
+            if isinstance(m, nn.ConvTranspose2d):
                 nn.init.kaiming_normal_(m.weight)
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
@@ -159,23 +207,16 @@ class Decoder(nn.Module):
 
     def forward(self, x):
         x, skip_rgb, skip_conv1_x, skip_conv2_x, max_index = x
-        n, c, h, w = x.size()
-        x = F.interpolate(size=(h * 2, w * 2), mode='bilinear', align_corners=True)
-
-        skip_conv2_x = self.skip_1(skip_conv2_x)
-        x = torch.cat([x, skip_conv2_x], dim=1)
+        x = self.bilinear(x)
+        skip_conv2_x = self.skip_2(skip_conv2_x)
+        x = t.cat([x, skip_conv2_x], dim=1)
         x = self.deconv1_x(x)
-
         x = self.unpooling(x, max_index)
-
-        skip_conv1_x = self.skip_2(skip_conv1_x)
-        x = torch.cat([x, skip_conv1_x], dim=1)
+        skip_conv1_x = self.skip_1(skip_conv1_x)
+        x = t.cat([x, skip_conv1_x], dim=1)
         x = self.deconv2_x(x)
-
-        skip_rgb = skip_rgb[:, 0:3, :, :]
-        x = torch.cat([x, skip_rgb], dim=1)
+        x = t.cat([x, skip_rgb], dim=1)
         x = self.deconv3_x(x)
-
         x = self.deconv4_x(x)
         return x
 
