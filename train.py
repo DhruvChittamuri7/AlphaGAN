@@ -1,11 +1,14 @@
 import os
 from PIL import Image
+from pathlib import Path
 import torch as t
 from torchvision import transforms
 from torch.utils.data import Dataset, DataLoader
 import Generator
 import Discriminator
 
+
+os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
 
 class AlphaMattingDataset(Dataset):
     def __init__(self, input_dir, gt_dir, trimaps):
@@ -32,13 +35,39 @@ class AlphaMattingDataset(Dataset):
 
         return image, tri_image, gt_image
 
+class TestDataset(Dataset):
+    def __init__(self, input_dir, trimap_dir, transform=None):
+        self.input_dir = Path(input_dir)
+        self.trimap_dir = Path(trimap_dir)
+        self.transform = transform
+        self.images = list(self.input_dir.glob('*.png'))
 
+    def __len__(self):
+        return len(self.images)
+
+    def __getitem__(self, idx):
+        img_path = self.images[idx]
+        img_name = img_path.stem
+        img = Image.open(img_path).convert("RGB")
+        trimap = Image.open(self.trimap_dir / (img_name + '.png')).convert("L")
+
+        if self.transform:
+            img = self.transform(img)
+            trimap = self.transform(trimap)
+
+        return img, trimap
+    
 transformer = transforms.Compose([transforms.ToTensor(), transforms.CenterCrop(320)])
 
+# Training Data
 train_dataset = AlphaMattingDataset(input_dir='Data/Train/InputImages', gt_dir='Data/Train/GroundTruthAlphas',
                                     trimaps='Data/Train/Trimaps')
-# train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, num_workers=2)
 train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
+
+# Test Dataset
+test_dataset = TestDataset(input_dir="Data/Test/Input Image", trimap_dir="Data/Test/TriMaps", transform=transformer)
+test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
+
 
 device = t.device("cuda" if t.cuda.is_available() else "cpu")
 
@@ -46,11 +75,20 @@ epochs = 1
 lr_g = 0.001
 lr_d = 0.001
 
+
+if t.cuda.is_available():
+    device = t.device("cuda")
+# elif t.backends.mps.is_built():
+#     device = t.device("mps")
+else:
+    device = t.device("cpu")
+
+
 generator = Generator.Generator().to(device)
 discriminator = Discriminator.PatchGANDiscriminator(patch_size=4).to(device)
 
-optim_g = t.optim.Adam(generator.parameters(), lr=lr_g)
-optim_d = t.optim.Adam(discriminator.parameters(), lr=lr_d)
+optim_g = t.optim.Adam(generator.parameters(), lr=0.001)
+optim_d = t.optim.Adam(discriminator.parameters(), lr=0.001)
 
 l1_loss = t.nn.SmoothL1Loss().to(device)
 mse_loss = t.nn.MSELoss().to(device)
